@@ -1,0 +1,87 @@
+<section
+  class="dropzone card"
+  [class.dragging]="dragging()"
+  (dragover)="onDragOver($event)"
+  (dragleave)="onDragLeave()"
+  (drop)="onDrop($event)">
+  <h1>Your bills</h1>
+  <p class="muted">
+    Drop utility bill PDFs here, or choose files. Each one is read, indexed and summarised so you can
+    ask questions about it.
+  </p>
+
+  <label class="picker">
+    <input type="file" accept="application/pdf" multiple (change)="onFilePicked($event)" [disabled]="uploading()" />
+    <span class="primary-look">{{ uploading() ? 'Working...' : 'Choose PDFs' }}</span>
+  </label>
+
+  @if (uploading()) {
+    <p class="muted working">Reading the bill and asking the model for its details...</p>
+  }
+  @if (notice()) {
+    <p class="notice">{{ notice() }}</p>
+  }
+  @if (uploadError()) {
+    <p class="error">{{ uploadError() }}</p>
+  }
+</section>
+
+@if (bills().length > 0) {
+  <p class="summary muted">
+    {{ summary().count }} bill(s) &middot; {{ summary().total | number: '1.2-2' }} {{ summary().currency }} total
+    @if (summary().needsReview > 0) {
+      &middot; <span class="warn-text">{{ summary().needsReview }} need review</span>
+    }
+  </p>
+}
+
+@if (loading()) {
+  <p class="muted">Loading...</p>
+} @else if (loadError()) {
+  <p class="error">{{ loadError() }}</p>
+} @else if (bills().length === 0) {
+  <p class="muted empty">No bills yet. Upload one to get started.</p>
+} @else {
+  <ul class="bill-list">
+    @for (bill of bills(); track bill.id) {
+      <li class="card bill">
+        <div class="bill-head">
+          <span [class]="utilityClass(bill.utility)">{{ bill.utility }}</span>
+          <strong class="provider">{{ bill.provider ?? bill.fileName }}</strong>
+          <span class="amount">
+            @if (bill.amountDue !== null) {
+              {{ bill.amountDue | number: '1.2-2' }} {{ bill.currency }}
+            } @else {
+              <span class="muted">no amount</span>
+            }
+          </span>
+        </div>
+
+        <div class="bill-meta muted">
+          <span>{{ bill.periodLabel }}</span>
+          @if (bill.usageQuantity !== null) {
+            <span>&middot; {{ bill.usageQuantity | number: '1.0-2' }} {{ bill.usageUnit }}</span>
+          }
+          @if (bill.dueDate) {
+            <span>&middot; due {{ bill.dueDate }}</span>
+          }
+          <span>&middot; {{ bill.pageCount }}p, {{ bill.chunkCount }} passages</span>
+        </div>
+
+        @if (bill.metadataStatus === 'NeedsReview') {
+          <p class="review">
+            Indexed and searchable, but its details could not be read reliably, so it is left out of totals.
+            @if (bill.metadataNotes) {
+              <span class="muted">{{ bill.metadataNotes }}</span>
+            }
+          </p>
+        }
+
+        <div class="bill-actions">
+          <span class="muted file">{{ bill.fileName }}</span>
+          <button type="button" (click)="remove(bill)">Remove</button>
+        </div>
+      </li>
+    }
+  </ul>
+}

@@ -1,0 +1,168 @@
+.intro h1 {
+  margin: 0 0 6px;
+  font-size: 21px;
+  letter-spacing: -0.01em;
+}
+
+.intro p {
+  margin: 0 0 20px;
+  max-width: 62ch;
+}
+
+.empty {
+  padding: 22px;
+  text-align: center;
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 22px;
+}
+
+.suggestions button {
+  color: var(--muted);
+}
+
+.suggestions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.thread {
+  display: grid;
+  gap: 20px;
+  margin-bottom: 96px;
+}
+
+.question {
+  margin: 0 0 8px;
+  font-weight: 580;
+}
+
+.answer {
+  padding: 15px 17px;
+}
+
+.totals {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: #1d4633;
+  font-variant-numeric: tabular-nums;
+}
+
+.exact {
+  display: block;
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+
+.text {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.caret {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret {
+    animation: none;
+  }
+}
+
+.citations {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.label {
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.composer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 12px 20px;
+  display: flex;
+  gap: 8px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.composer input {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 620px) {
+  .composer select {
+    display: none;
+  }
+}
+
+/* Per-period figures under the totals block: the shape of the trend, not just its sum. */
+.series {
+  list-style: none;
+  margin: -6px 0 12px;
+  padding: 0 12px;
+  display: grid;
+  gap: 2px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.series li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.series li:last-child {
+  border-bottom: 0;
+}
+
+.series .period {
+  color: var(--muted);
+}

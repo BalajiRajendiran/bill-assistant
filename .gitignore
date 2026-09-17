@@ -1,0 +1,24 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+artifacts/
+.vs/
+
+# Local data
+*.db
+*.db-shm
+*.db-wal
+api/BillAssistant.Api/uploads/
+
+# Node / Angular
+node_modules/
+web/dist/
+web/.angular/
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+.idea/
+*.swp

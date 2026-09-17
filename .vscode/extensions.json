@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "ms-dotnettools.csdevkit",
+    "ms-dotnettools.csharp",
+    "angular.ng-template",
+    "ms-azuretools.vscode-docker",
+    "humao.rest-client",
+    "esbenp.prettier-vscode"
+  ]
+}

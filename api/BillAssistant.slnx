@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="BillAssistant.Api/BillAssistant.Api.csproj" />
+  <Project Path="BillAssistant.Core.Tests/BillAssistant.Core.Tests.csproj" />
+  <Project Path="BillAssistant.Core/BillAssistant.Core.csproj" />
+  <Project Path="BillAssistant.Infrastructure/BillAssistant.Infrastructure.csproj" />
+</Solution>

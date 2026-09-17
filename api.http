@@ -1,0 +1,59 @@
+# Send these with the REST Client extension (humao.rest-client) - "Send Request" appears above each one.
+
+@host = http://localhost:5280
+
+### Health: is everything actually reachable?
+GET {{host}}/health
+
+### Upload a bill
+POST {{host}}/api/bills
+Content-Type: multipart/form-data; boundary=----bound
+
+------bound
+Content-Disposition: form-data; name="file"; filename="electric-2025-07.pdf"
+Content-Type: application/pdf
+
+< ./samples/electric-2025-07.pdf
+------bound--
+
+### List every bill
+GET {{host}}/api/bills
+
+### List only electricity bills from 2025
+GET {{host}}/api/bills?utility=electricity&from=2025-01-01&to=2025-12-31
+
+### Ask a question (numeric - answered from SQL totals)
+POST {{host}}/api/chat
+Content-Type: application/json
+
+{
+  "question": "How much did I pay for electricity in July?"
+}
+
+### Ask a question (retrieval - answered from the rate table)
+POST {{host}}/api/chat
+Content-Type: application/json
+
+{
+  "question": "What is the tier 3 electricity rate?"
+}
+
+### Ask, scoped to one utility
+POST {{host}}/api/chat
+Content-Type: application/json
+
+{
+  "question": "Is my usage going up?",
+  "utility": "Water"
+}
+
+### Streamed answer (server-sent events)
+POST {{host}}/api/chat/stream
+Content-Type: application/json
+
+{
+  "question": "How much did I spend on utilities altogether in 2025?"
+}
+
+### Delete a bill (paste an id from the list above)
+DELETE {{host}}/api/bills/00000000-0000-0000-0000-000000000000

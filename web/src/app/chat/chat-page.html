@@ -1,0 +1,96 @@
+<section class="intro">
+  <h1>Ask about your bills</h1>
+  <p class="muted">
+    Answers come only from the bills you have uploaded, with the passages they were taken from.
+  </p>
+</section>
+
+@if (billList().length === 0) {
+  <p class="card empty muted">
+    There are no bills indexed yet. Add some on the <a href="/bills">Bills</a> page first.
+  </p>
+} @else if (turns().length === 0) {
+  <div class="suggestions">
+    @for (suggestion of suggestions; track suggestion) {
+      <button type="button" (click)="use(suggestion)">{{ suggestion }}</button>
+    }
+  </div>
+}
+
+<div class="thread">
+  @for (turn of turns(); track turn.id) {
+    <article class="turn">
+      <p class="question">{{ turn.question }}</p>
+
+      <div class="card answer">
+        @if (turn.error) {
+          <p class="error">{{ turn.error }}</p>
+        } @else {
+          @if (turn.totals) {
+            <p class="totals">
+              <strong>{{ turn.totals.totalAmount | number: '1.2-2' }} {{ turn.totals.currency }}</strong>
+              across {{ turn.totals.billCount }} bill(s)
+              @if (turn.totals.totalUsage !== null) {
+                &middot; {{ turn.totals.totalUsage | number: '1.0-2' }} {{ turn.totals.usageUnit }}
+              }
+              <span class="muted exact">computed from your bill records</span>
+            </p>
+
+            @if (turn.totals.series.length > 1) {
+              <ul class="series">
+                @for (point of turn.totals.series; track point.label) {
+                  <li>
+                    <span class="period">{{ point.label }}</span>
+                    <span class="figure">
+                      {{ point.amount | number: '1.2-2' }} {{ turn.totals.currency }}
+                      @if (point.usage !== null) {
+                        &middot; {{ point.usage | number: '1.0-2' }} {{ point.usageUnit }}
+                      }
+                    </span>
+                  </li>
+                }
+              </ul>
+            }
+          }
+
+          <p class="text">{{ turn.answer }}@if (turn.streaming) {<span class="caret"></span>}</p>
+
+          @if (turn.citations.length > 0) {
+            <div class="citations">
+              <span class="muted label">Sources</span>
+              @for (citation of turn.citations; track citation.billId + '-' + citation.pageNumber + '-' + $index) {
+                <button type="button" class="chip" [title]="citation.snippet" (click)="openBill(citation)">
+                  {{ citation.fileName }} &middot; p{{ citation.pageNumber }}
+                </button>
+              }
+            </div>
+          }
+        }
+      </div>
+    </article>
+  }
+</div>
+
+<form class="composer" (ngSubmit)="send()">
+  <select [ngModel]="utility()" (ngModelChange)="utility.set($event)" name="utility" aria-label="Limit to one utility">
+    <option value="">All utilities</option>
+    <option value="Electricity">Electricity</option>
+    <option value="Water">Water</option>
+    <option value="Gas">Gas</option>
+    <option value="Internet">Internet</option>
+  </select>
+
+  <input
+    type="text"
+    name="question"
+    placeholder="How much did I pay for electricity in July?"
+    autocomplete="off"
+    [ngModel]="question()"
+    (ngModelChange)="question.set($event)" />
+
+  @if (busy()) {
+    <button type="button" (click)="stop()">Stop</button>
+  } @else {
+    <button type="submit" class="primary" [disabled]="!question().trim()">Ask</button>
+  }
+</form>
