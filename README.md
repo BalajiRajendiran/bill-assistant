@@ -1,5 +1,7 @@
 # bill-assistant
 
+[![CI](https://github.com/BalajiRajendiran/bill-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/BalajiRajendiran/bill-assistant/actions/workflows/ci.yml)
+
 Ask questions about your household utility bills in plain English, and get answers grounded in the
 actual PDFs.
 
@@ -15,6 +17,8 @@ answered from SQL, so the numbers are exact.
 Runs entirely on your machine: [Ollama](https://ollama.com) (`llama3.2` + `nomic-embed-text`) for the
 models, Qdrant for vectors, SQLite for bill records. Azure OpenAI can be swapped in from configuration
 without touching application code.
+
+![Chat view: a streamed, grounded answer with citation chips](docs/screenshot.png)
 
 ## Stack
 
@@ -110,6 +114,21 @@ cd ../web && npx ng test --watch=false
 
 Unit and contract tests use fake models and an in-memory vector store, so they run in under a second
 and never need Ollama or Qdrant. The integration tests skip unless `BILLS_INTEGRATION=1`.
+
+## Known limitations and next steps
+
+- **Scanned bills are not supported.** PdfPig reads the text layer only; `PdfPigTextExtractor`
+  detects a near-empty layer and returns a 400 rather than ingesting garbage. OCR (Tesseract, or
+  Azure Document Intelligence when running against Azure) is the next step.
+- **Retrieval quality is not measured.** There is no golden question/answer set and no metric for
+  recall@k or answer groundedness, so regressions in chunking or prompts would be caught by eye.
+  Building an evaluation harness is the highest-value item on this list.
+- **Small local models miss extraction fields.** llama3.2 needs a long, explicit prompt to fill all
+  ten metadata fields; a larger model or Azure OpenAI extracts more reliably.
+- **No component tests for the chat page.** The Angular suite covers services, not template
+  rendering, which is how a duplicate `@for` track key reached the browser.
+- **Single-user, no auth.** Uploads and bills are global; multi-tenancy and authentication would be
+  required for anything real.
 
 ## Repository layout
 
