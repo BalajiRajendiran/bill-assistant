@@ -47,8 +47,21 @@ public sealed record BillResponse(
 /// <summary>Result of uploading a bill.</summary>
 public sealed record IngestResponse(BillResponse Bill, int ChunksIndexed, string? Warning);
 
+/// <summary>One earlier exchange, sent back so a follow-up can be resolved against it.</summary>
+public sealed record ChatTurn(string Question, string Answer);
+
 /// <summary>A question about the bills.</summary>
-public sealed record AskRequest(string Question, string? Utility = null, DateOnly? From = null, DateOnly? To = null, int TopK = 6);
+/// <param name="History">
+/// Earlier exchanges in this conversation, oldest first. The server is stateless, so the client
+/// carries the conversation; only the most recent few are used.
+/// </param>
+public sealed record AskRequest(
+    string Question,
+    string? Utility = null,
+    DateOnly? From = null,
+    DateOnly? To = null,
+    int TopK = 6,
+    IReadOnlyList<ChatTurn>? History = null);
 
 /// <summary>An answer, with the passages it was grounded in.</summary>
 public sealed record AskResponse(string Answer, IReadOnlyList<CitationResponse> Citations, TotalsResponse? Totals);
@@ -77,8 +90,15 @@ public sealed record TotalsResponse(
 }
 
 /// <summary>One period's figures, oldest first, so a client can plot or compare them.</summary>
-public sealed record PeriodTotalResponse(string Label, DateOnly? PeriodStart, DateOnly? PeriodEnd, decimal Amount, double? Usage, string? UsageUnit)
+public sealed record PeriodTotalResponse(
+    string Label,
+    DateOnly? PeriodStart,
+    DateOnly? PeriodEnd,
+    decimal Amount,
+    double? Usage,
+    string? UsageUnit,
+    string Utility)
 {
     public static PeriodTotalResponse Create(PeriodTotal p) =>
-        new(p.Label, p.PeriodStart, p.PeriodEnd, p.Amount, p.Usage, p.UsageUnit);
+        new(p.Label, p.PeriodStart, p.PeriodEnd, p.Amount, p.Usage, p.UsageUnit, p.Utility.ToString());
 }

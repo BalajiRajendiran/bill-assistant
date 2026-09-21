@@ -3,7 +3,7 @@ import { Component, DestroyRef, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { BillsService } from '../core/bills.service';
-import { ChatService } from '../core/chat.service';
+import { ChatService, ChatTurn } from '../core/chat.service';
 import { Citation, Totals } from '../core/models';
 
 interface Turn {
@@ -45,6 +45,12 @@ export class ChatPage {
   private controller: AbortController | null = null;
   private nextTurnId = 0;
 
+  /**
+   * How many earlier exchanges travel with a question. Enough for "can you sum them?" to find its
+   * referent, short enough that the prompt stays mostly excerpts.
+   */
+  private static readonly historyDepth = 4;
+
   constructor() {
     void this.bills.refresh();
 
@@ -67,11 +73,21 @@ export class ChatPage {
     this.busy.set(true);
     this.controller = new AbortController();
 
+    // Read before the new turn is appended. Only completed, successful exchanges count as context:
+    // a failed turn carries no answer, and the turn being asked now is not its own history.
+    const history: ChatTurn[] = this.turns()
+      .filter((t) => !t.error && t.answer.trim().length > 0)
+      .slice(-ChatPage.historyDepth)
+      .map((t) => ({ question: t.question, answer: t.answer }));
+
     const id = this.nextTurnId++;
     this.turns.update((t) => [...t, { id, question, answer: '', citations: [], totals: null, streaming: true, error: null }]);
 
     try {
-      for await (const event of this.chat.ask({ question, utility: this.utility() || null }, this.controller.signal)) {
+      for await (const event of this.chat.ask(
+        { question, utility: this.utility() || null, history },
+        this.controller.signal,
+      )) {
         this.patch(id, (current) => {
           switch (event.type) {
             case 'sources':

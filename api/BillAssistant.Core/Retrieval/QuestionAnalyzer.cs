@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using BillAssistant.Core.Models;
-using BillAssistant.Core.Validation;
 
 namespace BillAssistant.Core.Retrieval;
 
@@ -15,10 +14,22 @@ public sealed record InferredRange(DateOnly? From, DateOnly? To, bool YearWasGue
 /// </param>
 public sealed record QuestionIntent(
     bool WantsTotals,
-    UtilityKind? Utility,
+    IReadOnlyList<UtilityKind> Utilities,
     DateOnly? From,
     DateOnly? To,
-    bool YearWasGuessed = false);
+    bool YearWasGuessed = false)
+{
+    /// <summary>
+    /// The one utility the question named, or null when it named none - or several.
+    /// </summary>
+    /// <remarks>
+    /// Null has to mean "do not narrow to a single kind" in both cases, but the two are not the same
+    /// query: a question naming none covers every bill, while "add the gas and internet bills" covers
+    /// exactly two. <see cref="Utilities"/> keeps that distinction, and a total computed from it is
+    /// the total that was asked for rather than the total of everything on file.
+    /// </remarks>
+    public UtilityKind? Utility => Utilities.Count == 1 ? Utilities[0] : null;
+}
 
 /// <summary>
 /// Reads filters and intent out of a plain-language question.
@@ -36,9 +47,20 @@ public static partial class QuestionAnalyzer
 {
     private static readonly string[] AggregateWords =
     [
-        "total", "totals", "altogether", "combined", "sum", "add up", "overall",
-        "how much did i pay", "how much have i paid", "how much did i spend", "how much have i spent",
-        "average", "per month on average", "spend", "spent", "trend", "trending", "compare", "comparison",
+        "total", "totals", "altogether", "combined", "combine", "sum", "overall",
+
+        // Plain arithmetic wording. "Add the gas and internet bills" and "how much was it
+        // altogether" are the same request as "total", and asking the model to do the addition is
+        // the one thing it reliably gets wrong.
+        "add", "adds", "added", "adding", "plus",
+
+        // A bare "how much" / "how many" is a request for a figure. It used to be matched only in
+        // its longest forms ("how much did i pay"), so "how much did the gas and water come to"
+        // fell through to plain retrieval and the model was left to add the excerpts up itself.
+        "how much", "how many",
+
+        "average", "per month on average", "spend", "spent", "spending",
+        "trend", "trending", "compare", "comparison",
 
         // Direction-of-travel wording. People ask "is my water usage going up?" far more often than
         // they say "trend", and that question is answered by comparing figures, not by reading one
@@ -46,6 +68,32 @@ public static partial class QuestionAnalyzer
         "going up", "going down", "gone up", "gone down", "rising", "falling",
         "increase", "increasing", "decrease", "decreasing", "higher", "lower",
         "more than last", "expensive", "cheaper"
+    ];
+
+    /// <summary>
+    /// The aggregate vocabulary, matched on whole words.
+    /// </summary>
+    /// <remarks>
+    /// Whole words matter now that the list contains short ones: a plain substring test reads "add"
+    /// out of "address" and "sum" out of "consumption", which would put an ordinary lookup on the
+    /// totals path.
+    /// </remarks>
+    private static readonly Regex AggregatePattern = new(
+        $@"\b(?:{string.Join('|', AggregateWords.Select(Regex.Escape))})\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Words that name a utility, including the ones that imply it without saying it ("kwh",
+    /// "therms"). Grouped per kind so a question can be checked against every kind, not just the
+    /// first one that happens to match.
+    /// </summary>
+    private static readonly (UtilityKind Kind, string[] Words)[] UtilityWords =
+    [
+        (UtilityKind.Electricity, ["electric", "power", "energy", "kwh", "lighting"]),
+        (UtilityKind.Water, ["water", "sewer"]),
+        (UtilityKind.Gas, ["gas", "therm", "heating"]),
+        (UtilityKind.Internet, ["internet", "broadband", "fibre", "fiber"]),
+        (UtilityKind.Waste, ["waste", "trash", "refuse", "recycl"])
     ];
 
     public static QuestionIntent Analyse(string question, DateOnly today)
@@ -56,34 +104,74 @@ public static partial class QuestionAnalyzer
         var range = InferRange(text, today);
 
         return new QuestionIntent(
-            WantsTotals: AggregateWords.Any(w => text.Contains(w, StringComparison.Ordinal)),
-            Utility: InferUtility(text),
+            WantsTotals: AggregatePattern.IsMatch(text),
+            Utilities: InferUtilities(text),
             From: range.From,
             To: range.To,
             YearWasGuessed: range.YearWasGuessed);
     }
 
-    /// <summary>Maps the words a household actually uses onto a utility kind.</summary>
+    /// <summary>
+    /// Maps the words a household actually uses onto a utility kind, or null to search every bill.
+    /// </summary>
+    /// <remarks>
+    /// Null means "do not filter", and that covers two cases: a question that names no utility, and
+    /// one that names more than one. The second matters. "Add the gas and internet bills" used to
+    /// return whichever kind was tested first, silently dropping the other from retrieval, so the
+    /// model was asked to compare two bills having been shown only one - and duly reported the other
+    /// as missing. A question about two utilities is answered by retrieving both.
+    /// </remarks>
     public static UtilityKind? InferUtility(string text)
     {
-        var kind = BillMetadataValidator.ParseUtility(text);
-        if (kind != UtilityKind.Unknown)
+        var named = InferUtilities(text);
+        return named.Count == 1 ? named[0] : null;
+    }
+
+    /// <summary>
+    /// Every utility the question names, in enum order. Empty means it named none.
+    /// </summary>
+    /// <remarks>
+    /// The set, rather than a single kind, is what callers need. "Add the gas and internet bills"
+    /// names two: narrowing to either one silently answers a different question, and widening to all
+    /// of them totals five bills nobody asked about.
+    /// </remarks>
+    public static IReadOnlyList<UtilityKind> InferUtilities(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        var lowered = text.ToLowerInvariant();
+        var named = new List<UtilityKind>();
+
+        foreach (var (kind, words) in UtilityWords)
         {
-            return kind;
+            if (words.Any(w => lowered.Contains(w, StringComparison.Ordinal)))
+            {
+                named.Add(kind);
+            }
         }
 
-        // Words that imply a utility without naming it.
-        if (text.Contains("kwh", StringComparison.Ordinal) || text.Contains("lighting", StringComparison.Ordinal))
-        {
-            return UtilityKind.Electricity;
-        }
+        return named;
+    }
 
-        if (text.Contains("heating", StringComparison.Ordinal) || text.Contains("therm", StringComparison.Ordinal))
-        {
-            return UtilityKind.Gas;
-        }
+    /// <summary>
+    /// True when a question leans on the conversation around it and cannot be searched for as typed.
+    /// </summary>
+    /// <remarks>
+    /// Resolving a follow-up costs a model call and carries a risk of its own: asked to rewrite a
+    /// question that already stands on its own, llama3.2 folds the previous turn into it - "How much
+    /// did I pay for electricity in July 2025?" came back as "What is the total of the gas bill and
+    /// the electricity bill for July 2025?", which answers something nobody asked. So a question is
+    /// only sent for resolution when it actually contains a reference that needs one.
+    ///
+    /// Deterministic and pure, like the rest of this class: a false negative searches on the question
+    /// as typed, which is the behaviour this had before, and a false positive is caught by the length
+    /// guard on the rewrite.
+    /// </remarks>
+    public static bool LooksLikeFollowUp(string question)
+    {
+        ArgumentNullException.ThrowIfNull(question);
 
-        return null;
+        return DependentReferencePattern().IsMatch(question);
     }
 
     /// <summary>
@@ -178,6 +266,13 @@ public static partial class QuestionAnalyzer
 
         return 0;
     }
+
+    // A pronoun or a demonstrative standing in for a bill ("sum them", "these two"), or an opening
+    // that continues the previous sentence rather than starting a new one ("and water?").
+    [GeneratedRegex(
+        @"\b(them|they|those|these|that|this|it|its|both|either|neither|same|again|ones?)\b|^\s*(and|also|what about|how about)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex DependentReferencePattern();
 
     [GeneratedRegex(@"last\s+(\d{1,2})\s+months?", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex LastMonthsPattern();

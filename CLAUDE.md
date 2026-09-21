@@ -34,11 +34,13 @@ INGEST   PDF ──PdfPig──> page text ──chunker──> chunks ──IEm
                                                                                     v
                                                      Qdrant "bill_chunks_nomic_embed_text"
 
-QUERY    question ──IEmbeddingGenerator──> vector ──VectorStoreCollection.SearchAsync──> top-K chunks
-             │                                                                              │
-             └──(numeric question?)──> SQL totals ─────────┐                                │
-                                                           v                                v
-                                        answer + citations <── IChatClient (grounded prompt)
+QUERY    question ──(a follow-up? IChatClient rewrites it to stand alone)──> question'
+             │
+             ├──IEmbeddingGenerator──> vector ──VectorStoreCollection.SearchAsync──> top-K chunks
+             │                                                                          │
+             └──(numeric question?)──> SQL totals ────────┐                             │
+                                                          v                             v
+                                       answer + citations <── IChatClient (grounded prompt)
 ```
 
 ### Layering
@@ -53,7 +55,7 @@ because Core does not reference the package.** It is a compile error, not a conv
 
 | Project | Contains | May reference |
 |---|---|---|
-| `BillAssistant.Core` | models, interfaces, `BillChunker`, `QuestionAnalyzer`, `BillMetadataValidator`, prompts | abstractions only |
+| `BillAssistant.Core` | models, interfaces, `BillChunker`, `QuestionAnalyzer`, `BillMetadataValidator`, `TrendSummary`, `AnswerText`, prompts | abstractions only |
 | `BillAssistant.Infrastructure` | `Ai/`, `Pdf/`, `Persistence/`, `Vectors/`, `Ingestion/`, `Retrieval/` | anything |
 | `BillAssistant.Api` | `Endpoints/`, `Contracts/`, `Program.cs` | Core + Infrastructure |
 | `BillAssistant.Core.Tests` | unit + contract + (skipped) integration tests | all of the above |
@@ -113,8 +115,41 @@ first, and `TrendSummary.Describe` turns the first and last into a stated fact (
 nearest in an excerpt, and once claimed a bill was missing that the totals block was listing. Comparing
 two numbers is arithmetic, so it happens in code.
 
+The grounded prompt also carries a `<today>` block. The model has no clock: without it "what is
+today's date" is answered by guessing from whichever bill was retrieved, and nothing relative - is this
+overdue, is it due soon - can be reasoned about at all.
+
+Citations are one per (bill, page). Several chunks of the same page routinely match the same question,
+and listing that file three times reads as three corroborating sources rather than as one passage
+retrieved three times.
+
 `QuestionAnalyzer` (pure, in Core) decides whether a question is numeric - including direction wording
-like "going up" and "more expensive" - and infers a utility and date window from its wording.
+like "going up" and "more expensive" - and infers the utilities and date window from its wording. Two
+rules there are load-bearing, and both were learned the hard way.
+
+Aggregate words match on **whole words**. Otherwise "address" is read as "add" and "consumption" as
+"sum", which puts an ordinary lookup on the totals path.
+
+A question naming **two** utilities scopes to exactly those two - never to one of them, never to all of
+them. `QuestionIntent.Utilities` carries the set, and `BillQuery.Kinds` / `ChunkFilter.Kinds` normalise
+it for the SQL `IN (...)` and the vector-store match-any. Both failure modes were real: narrowed to one,
+"add the gas and internet bills" retrieved only gas and the model duly reported the internet bill as
+missing; widened to all, it totalled all seven bills on file - the right answer to a question nobody
+asked.
+
+### Follow-up questions
+
+The API is stateless; the client sends the last few exchanges as `history`. A question that
+`QuestionAnalyzer.LooksLikeFollowUp` recognises as leaning on the conversation ("can you sum them?") is
+rewritten into a standalone question by the chat model *before* it is embedded - a pronoun matches no
+passage in any bill, so retrieval would otherwise return whatever happened to be nearest.
+
+The gate matters as much as the rewrite. Asked to rewrite a question that already stands on its own,
+llama3.2 folds the previous turn into it: "How much did I pay for electricity in July 2025?" came back
+as "What is the total of the gas bill and the electricity bill for July 2025?". Self-contained questions
+never reach the rewrite step. A rewrite that fails, comes back empty, or runs past 300 characters is
+discarded in favour of the question as typed - resolution improves retrieval and is never a
+precondition for answering.
 
 ### API surface
 
@@ -124,7 +159,7 @@ like "going up" and "more expensive" - and infers a utility and date window from
 | GET | `/api/bills` | List bills (`utility`, `from`, `to`, `limit`) |
 | GET | `/api/bills/{id}` | One bill |
 | DELETE | `/api/bills/{id}` | Delete bill and its chunks |
-| POST | `/api/chat` | Ask; returns answer + citations + totals |
+| POST | `/api/chat` | Ask (optional `history`); returns answer + citations + totals |
 | POST | `/api/chat/stream` | Same, SSE (`sources` event first, then `token`s, then `done`) |
 | GET | `/health` | API + Ollama + Qdrant, with dimension check |
 
@@ -138,6 +173,10 @@ Standalone components, signals, no NgModules, zoneless. `core/` holds the typed 
 delete) and `chat/` (ask, streamed answer, citation chips). `proxy.conf.json` sends `/api` and
 `/health` to `localhost:5280`, so no CORS config is needed in development.
 
+Because the API is stateless, `ChatPage` carries the conversation: it sends the last four completed
+exchanges with each question. Failed and still-streaming turns are excluded - a turn with no answer is
+not context, and a question is not its own history.
+
 ## Commands
 
 ```bash
@@ -146,7 +185,7 @@ ollama pull llama3.2 && ollama pull nomic-embed-text
 
 # api  (run from /api)
 dotnet run --project BillAssistant.Api --urls http://localhost:5280
-dotnet test                                 # 116 unit/contract tests; integration ones skip
+dotnet test                                 # 160 unit/contract tests; integration ones skip
 BILLS_INTEGRATION=1 dotnet test --filter Category=Integration   # needs Ollama + Qdrant up
 dotnet ef migrations add <Name> --project BillAssistant.Infrastructure \
     --startup-project BillAssistant.Api --output-dir Persistence/Migrations
@@ -191,6 +230,21 @@ These are the things that actually cost time here.
   prompt is truncated from the *front* — dropping the system instructions while keeping the excerpts,
   which yields an ungrounded answer that looks fine. `OllamaDefaultsChatClient` sets `num_ctx`, and
   top-K is capped at 12.
+- **Prompt order decides whether the exact figures get used.** The `<totals>` block goes *after*
+  `<excerpts>`, and the `Sum:` line is stated twice - once before the excerpts and once in the block
+  after them. Measured on "add water and electricity bill please" against the real corpus: totals
+  before the excerpts, the model stated the computed sum 0 times in 4; totals after them, 2 in 5;
+  bracketing the excerpts with the sum at both ends, 5 in 5. Cutting top-K down to reduce competing
+  figures made it *worse* (0 in 5), not better. Whatever the mechanism, the ordering is load-bearing -
+  `BillChatServiceTests` pins it.
+- **A trend across two utilities is not a trend.** `BillTotals.Series` can span kinds when a question
+  names more than one, and comparing the oldest electricity bill to the newest water bill yields a
+  real-looking percentage computed from unrelated things. `PeriodTotal.Utility` exists so
+  `TrendSummary.Describe` can return null instead.
+- **llama3.2 echoes the prompt's own tags.** Three replies in four ended with a literal
+  `<excerpts> [4] </excerpts>` or began reprinting the totals block. `AnswerText` strips that on both
+  the buffered and the streamed path - a tag can straddle two tokens, so the stream filter holds back
+  anything that might still become one.
 - **llama3.2 needs to be told to fill every field.** Asked plainly, it returns the two or three fields
   it happened to notice and omits the rest. The prompt in `Core/Prompts/BillPrompts.cs` earns its
   length: where each fact is printed, an explicit demand for all ten keys, and one worked example.

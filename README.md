@@ -102,7 +102,7 @@ dotnet user-secrets set "Ai:AzureOpenAI:ApiKey" "<key>" --project api/BillAssist
 
 ```bash
 cd api
-dotnet test                                                    # 116 tests, no services needed
+dotnet test                                                    # 160 tests, no services needed
 BILLS_INTEGRATION=1 dotnet test --filter Category=Integration   # 4 tests, needs Ollama + Qdrant
 
 cd ../web && npx ng test --watch=false

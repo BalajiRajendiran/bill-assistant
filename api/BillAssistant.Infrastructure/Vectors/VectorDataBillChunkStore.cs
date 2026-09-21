@@ -122,20 +122,22 @@ public sealed class VectorDataBillChunkStore : IBillChunkStore
             return null;
         }
 
-        var utility = filter.Utility?.ToString();
+        // Matched against the set the question named, so a question about two utilities pre-filters
+        // to those two instead of searching every bill. Providers push Contains down as a match-any.
+        var kinds = filter.Kinds.Select(k => k.ToString()).ToArray();
         var from = filter.From?.DayNumber ?? 0;
         var to = filter.To?.DayNumber ?? 0;
 
-        return (utility, from, to) switch
+        return (kinds.Length > 0, from, to) switch
         {
-            (null, 0, 0) => null,
-            ({ } u, 0, 0) => c => c.Utility == u,
-            (null, > 0, 0) => c => c.PeriodEndDay == 0 || c.PeriodEndDay >= from,
-            (null, 0, > 0) => c => c.PeriodStartDay == 0 || c.PeriodStartDay <= to,
-            (null, > 0, > 0) => c => (c.PeriodEndDay == 0 || c.PeriodEndDay >= from) && (c.PeriodStartDay == 0 || c.PeriodStartDay <= to),
-            ({ } u, > 0, 0) => c => c.Utility == u && (c.PeriodEndDay == 0 || c.PeriodEndDay >= from),
-            ({ } u, 0, > 0) => c => c.Utility == u && (c.PeriodStartDay == 0 || c.PeriodStartDay <= to),
-            ({ } u, > 0, > 0) => c => c.Utility == u
+            (false, 0, 0) => null,
+            (true, 0, 0) => c => kinds.Contains(c.Utility),
+            (false, > 0, 0) => c => c.PeriodEndDay == 0 || c.PeriodEndDay >= from,
+            (false, 0, > 0) => c => c.PeriodStartDay == 0 || c.PeriodStartDay <= to,
+            (false, > 0, > 0) => c => (c.PeriodEndDay == 0 || c.PeriodEndDay >= from) && (c.PeriodStartDay == 0 || c.PeriodStartDay <= to),
+            (true, > 0, 0) => c => kinds.Contains(c.Utility) && (c.PeriodEndDay == 0 || c.PeriodEndDay >= from),
+            (true, 0, > 0) => c => kinds.Contains(c.Utility) && (c.PeriodStartDay == 0 || c.PeriodStartDay <= to),
+            (true, > 0, > 0) => c => kinds.Contains(c.Utility)
                 && (c.PeriodEndDay == 0 || c.PeriodEndDay >= from)
                 && (c.PeriodStartDay == 0 || c.PeriodStartDay <= to),
             _ => null

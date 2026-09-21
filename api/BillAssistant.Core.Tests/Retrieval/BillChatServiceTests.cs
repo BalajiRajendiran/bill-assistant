@@ -47,7 +47,7 @@ public class BillChatServiceTests
                 return true;
             }
 
-            if (filter.Utility is { } utility && chunk.Utility != utility.ToString())
+            if (filter.Kinds is { Count: > 0 } kinds && !kinds.Any(k => chunk.Utility == k.ToString()))
             {
                 return false;
             }
@@ -94,9 +94,13 @@ public class BillChatServiceTests
         PeriodEndDay = end.DayNumber,
     };
 
-    private static BillChatService Build(IBillChunkStore store, IBillRepository repository, FakeChatClient? client = null) =>
+    private static BillChatService Build(
+        IBillChunkStore store,
+        IBillRepository repository,
+        FakeChatClient? client = null,
+        FakeEmbeddingGenerator? embeddings = null) =>
         new(client ?? new FakeChatClient("Your July electricity bill was $220.57. [1]"),
-            new FakeEmbeddingGenerator(),
+            embeddings ?? new FakeEmbeddingGenerator(),
             store,
             repository,
             new FakeTimeProvider(Now),
@@ -138,7 +142,7 @@ public class BillChatServiceTests
         Assert.NotNull(answer.Totals);
         Assert.Equal(481.71m, answer.Totals!.TotalAmount);
         Assert.Single(repository.ReceivedQueries);
-        Assert.Equal(UtilityKind.Electricity, repository.ReceivedQueries[0].Utility);
+        Assert.Equal([UtilityKind.Electricity], repository.ReceivedQueries[0].Kinds);
     }
 
     [Fact]
@@ -270,5 +274,284 @@ public class BillChatServiceTests
     {
         await Assert.ThrowsAsync<ArgumentException>(
             () => Build(new StubChunkStore(), new StubRepository()).AskAsync(new ChatRequest("   ")));
+    }
+
+    [Fact]
+    public async Task AFollowUpIsResolvedBeforeItIsSearchedFor()
+    {
+        // First reply is the rewrite, second is the answer.
+        var client = new FakeChatClient("What is the total of the internet bill and the gas bill?", "ok");
+        var embeddings = new FakeEmbeddingGenerator();
+        var store = new StubChunkStore(Chunk("Gas", "Current charges 30.59", new(2025, 7, 1), new(2025, 7, 31)));
+
+        var request = new ChatRequest("can you sum them?", History:
+        [
+            new ChatExchange("how much was the internet bill?", "Your internet bill was 71.13 USD."),
+            new ChatExchange("what about gas?", "Your gas bill was 30.59 USD."),
+        ]);
+
+        await Build(store, new StubRepository(), client, embeddings).AskAsync(request);
+
+        // "can you sum them?" matches no passage in any bill; the resolved form is what gets embedded.
+        Assert.Contains("total of the internet bill and the gas bill", embeddings.ReceivedInputs[0]);
+        Assert.DoesNotContain("can you sum them?", embeddings.ReceivedInputs);
+    }
+
+    [Fact]
+    public async Task ResolvingAFollowUpAlsoFixesItsFiltersAndItsTotals()
+    {
+        var client = new FakeChatClient("What did I pay in total for water in July 2025?", "ok");
+        var repository = new StubRepository(new BillTotals(1, 206.24m, "USD", null, null, null, null));
+        var store = new StubChunkStore(Chunk("Water", "Current charges 206.24", new(2025, 7, 1), new(2025, 7, 31)));
+
+        var request = new ChatRequest("and that one?", History:
+        [
+            new ChatExchange("how much was the gas bill in July 2025?", "Your gas bill was 30.59 USD."),
+        ]);
+
+        await Build(store, repository, client).AskAsync(request);
+
+        // The utility and the date window are read off the resolved question, not the pronoun.
+        Assert.Equal([UtilityKind.Water], store.ReceivedFilters[0]!.Kinds);
+        Assert.Single(repository.ReceivedQueries);
+        Assert.Equal([UtilityKind.Water], repository.ReceivedQueries[0].Kinds);
+    }
+
+    [Fact]
+    public async Task TheAnswerPromptKeepsTheQuestionAsAskedAlongsideTheResolvedOne()
+    {
+        var client = new FakeChatClient("What is the total of the internet bill and the gas bill?", "ok");
+        var store = new StubChunkStore(Chunk("Gas", "Current charges 30.59", new(2025, 7, 1), new(2025, 7, 31)));
+
+        var request = new ChatRequest("can you sum them?", History:
+        [
+            new ChatExchange("how much was the internet bill?", "Your internet bill was 71.13 USD."),
+        ]);
+
+        await Build(store, new StubRepository(), client).AskAsync(request);
+
+        var prompt = client.ReceivedMessages[1].Last(m => m.Role == ChatRole.User).Text;
+
+        Assert.Contains("Question: can you sum them?", prompt);
+        Assert.Contains("Understood as: What is the total of the internet bill and the gas bill?", prompt);
+    }
+
+    [Fact]
+    public async Task WithNoHistory_NothingIsRewritten_AndTheModelIsCalledOnce()
+    {
+        var client = new FakeChatClient("ok");
+        var embeddings = new FakeEmbeddingGenerator();
+        var store = new StubChunkStore(Chunk("Gas", "Current charges 30.59", new(2025, 7, 1), new(2025, 7, 31)));
+
+        await Build(store, new StubRepository(), client, embeddings)
+            .AskAsync(new ChatRequest("when is my gas bill due?"));
+
+        Assert.Equal(1, client.CallCount);
+        Assert.Equal("when is my gas bill due?", embeddings.ReceivedInputs[0]);
+    }
+
+    [Fact]
+    public async Task ARunawayRewriteIsDiscarded_AndTheQuestionIsSearchedForAsTyped()
+    {
+        // A small model that ignores the instruction answers the question instead of rewriting it.
+        var rambling = string.Join(' ', Enumerable.Repeat("the total across every bill you uploaded is", 20));
+        var client = new FakeChatClient(rambling, "ok");
+        var embeddings = new FakeEmbeddingGenerator();
+        var store = new StubChunkStore(Chunk("Gas", "Current charges 30.59", new(2025, 7, 1), new(2025, 7, 31)));
+
+        var request = new ChatRequest("can you sum them?", History:
+        [
+            new ChatExchange("how much was the gas bill?", "Your gas bill was 30.59 USD."),
+        ]);
+
+        await Build(store, new StubRepository(), client, embeddings).AskAsync(request);
+
+        Assert.Equal("can you sum them?", embeddings.ReceivedInputs[0]);
+    }
+
+    [Fact]
+    public async Task AFailedRewriteNeverFailsTheQuestion()
+    {
+        var client = new ThrowingOnceChatClient("ok");
+        var store = new StubChunkStore(Chunk("Gas", "Current charges 30.59", new(2025, 7, 1), new(2025, 7, 31)));
+
+        var request = new ChatRequest("can you sum them?", History:
+        [
+            new ChatExchange("how much was the gas bill?", "Your gas bill was 30.59 USD."),
+        ]);
+
+        var answer = await new BillChatService(
+            client,
+            new FakeEmbeddingGenerator(),
+            store,
+            new StubRepository(),
+            new FakeTimeProvider(Now),
+            NullLogger<BillChatService>.Instance).AskAsync(request);
+
+        Assert.Equal("ok", answer.Answer);
+    }
+
+    [Fact]
+    public async Task RepeatedPassagesFromOnePage_AreOneCitation()
+    {
+        var billId = Guid.NewGuid().ToString();
+
+        BillChunk SamePage(string text) => new()
+        {
+            BillId = billId,
+            Text = text,
+            Utility = "Gas",
+            FileName = "gas-2025-07.pdf",
+            PageNumber = 1,
+            PeriodStartDay = new DateOnly(2025, 7, 1).DayNumber,
+            PeriodEndDay = new DateOnly(2025, 7, 31).DayNumber,
+        };
+
+        var store = new StubChunkStore(SamePage("Current charges 30.59"), SamePage("Total usage 18 therms"));
+
+        var answer = await Build(store, new StubRepository()).AskAsync(new ChatRequest("what is my gas bill"));
+
+        Assert.Single(answer.Citations);
+    }
+
+    [Fact]
+    public async Task AStandaloneQuestionIsNeverRewritten_EvenWithAConversationBehindIt()
+    {
+        // Given history, llama3.2 will happily fold the previous turn into a question that did not
+        // need it. A self-contained question must not reach the rewrite step at all.
+        var client = new FakeChatClient("What is the total of the gas bill and the electricity bill?", "ok");
+        var embeddings = new FakeEmbeddingGenerator();
+        var store = new StubChunkStore(Chunk("Electricity", "Current charges 220.57", new(2025, 7, 1), new(2025, 7, 31)));
+
+        var request = new ChatRequest("How much did I pay for electricity in July 2025?", History:
+        [
+            new ChatExchange("how much was the gas bill?", "Your gas bill was 30.59 USD."),
+        ]);
+
+        await Build(store, new StubRepository(), client, embeddings).AskAsync(request);
+
+        Assert.Equal("How much did I pay for electricity in July 2025?", embeddings.ReceivedInputs[0]);
+        Assert.Equal(1, client.CallCount); // the answer only - no rewrite call was made
+    }
+
+    [Fact]
+    public async Task AQuestionNamingTwoUtilities_TotalsExactlyThoseTwo()
+    {
+        var repository = new StubRepository(new BillTotals(2, 101.72m, "USD", null, null, null, null));
+        var store = new StubChunkStore(
+            Chunk("Gas", "Current charges 30.59", new(2025, 7, 1), new(2025, 7, 31)),
+            Chunk("Internet", "Current charges 71.13", new(2025, 7, 1), new(2025, 7, 31)),
+            Chunk("Electricity", "Current charges 220.57", new(2025, 7, 1), new(2025, 7, 31)));
+
+        var answer = await Build(store, repository).AskAsync(new ChatRequest("can you add internet bill and gas bill"));
+
+        // Both are retrieved - and electricity, which was not asked about, is not.
+        Assert.Equal(
+            ["Gas", "Internet"],
+            answer.Citations.Select(c => c.Utility).Order());
+
+        // The total covers those two bills, not every bill on file.
+        Assert.Equal([UtilityKind.Gas, UtilityKind.Internet], repository.ReceivedQueries[0].Kinds.Order());
+    }
+
+    [Fact]
+    public async Task ScaffoldingEchoedByTheModelNeverReachesTheReader()
+    {
+        var client = new FakeChatClient("The water bill is $206.24.\n\n<excerpts> [4] </excerpts>");
+        var store = new StubChunkStore(Chunk("Water", "Current charges 206.24", new(2025, 7, 1), new(2025, 9, 30)));
+
+        var answer = await Build(store, new StubRepository(), client).AskAsync(new ChatRequest("what is my water bill"));
+
+        Assert.Equal("The water bill is $206.24.", answer.Answer);
+    }
+
+    [Fact]
+    public async Task StreamedScaffoldingIsFilteredOutToo()
+    {
+        var client = new FakeChatClient("The water bill is $206.24. <excerpts> [4] </excerpts>");
+        var store = new StubChunkStore(Chunk("Water", "Current charges 206.24", new(2025, 7, 1), new(2025, 9, 30)));
+
+        var text = new System.Text.StringBuilder();
+        await foreach (var e in Build(store, new StubRepository(), client).StreamAsync(new ChatRequest("what is my water bill")))
+        {
+            if (e.Type == "token")
+            {
+                text.Append(e.Text);
+            }
+        }
+
+        Assert.DoesNotContain("<excerpts", text.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("206.24", text.ToString());
+    }
+
+    [Fact]
+    public async Task TheSumIsStatedInThePrompt_NotLeftAsABareField()
+    {
+        var client = new FakeChatClient("ok");
+        var totals = new BillTotals(5, 847.48m, "USD", null, null, new(2025, 4, 1), new(2025, 9, 30));
+        var store = new StubChunkStore(Chunk("Water", "Current charges 206.24", new(2025, 7, 1), new(2025, 9, 30)));
+
+        await Build(store, new StubRepository(totals), client)
+            .AskAsync(new ChatRequest("add water and electricity bill please"));
+
+        var prompt = client.ReceivedMessages[0].Last(m => m.Role == ChatRole.User).Text;
+
+        // Stated twice, bracketing the excerpts - see AnswerUser for the measurements behind that.
+        const string sum = "Sum: the 5 matching bills total 847.48 USD.";
+        var first = prompt.IndexOf(sum, StringComparison.Ordinal);
+        var last = prompt.LastIndexOf(sum, StringComparison.Ordinal);
+
+        Assert.True(first >= 0, "the computed sum must be stated for the model");
+        Assert.True(last > first, "and stated again after the excerpts, or it answers from one of them");
+        Assert.True(first < prompt.IndexOf("<excerpts>", StringComparison.Ordinal));
+        Assert.True(last > prompt.IndexOf("</excerpts>", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TheTotalsBlockComesAfterTheExcerpts()
+    {
+        // Ordering, not presence, is what made the model use the computed figures - see AnswerUser.
+        var client = new FakeChatClient("ok");
+        var totals = new BillTotals(5, 847.48m, "USD", null, null, new(2025, 4, 1), new(2025, 9, 30));
+        var store = new StubChunkStore(Chunk("Water", "Current charges 206.24", new(2025, 7, 1), new(2025, 9, 30)));
+
+        await Build(store, new StubRepository(totals), client)
+            .AskAsync(new ChatRequest("add water and electricity bill please"));
+
+        var prompt = client.ReceivedMessages[0].Last(m => m.Role == ChatRole.User).Text;
+
+        Assert.True(
+            prompt.IndexOf("</excerpts>", StringComparison.Ordinal) < prompt.IndexOf("<totals>", StringComparison.Ordinal),
+            "the exact figures must be the last thing the model reads, or it answers from an excerpt instead");
+    }
+
+    /// <summary>Fails the first call and succeeds afterwards, to exercise a rewrite that errors.</summary>
+    private sealed class ThrowingOnceChatClient(string reply) : IChatClient
+    {
+        private int _calls;
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (_calls++ == 0)
+            {
+                throw new InvalidOperationException("the model is unreachable");
+            }
+
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, reply)));
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
     }
 }

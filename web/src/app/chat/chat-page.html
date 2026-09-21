@@ -38,9 +38,11 @@
 
             @if (turn.totals.series.length > 1) {
               <ul class="series">
-                @for (point of turn.totals.series; track point.label) {
+                <!-- Tracked by index: a series can span utilities, so several bills share one
+                     period label. The array is built once per turn and never reordered. -->
+                @for (point of turn.totals.series; track $index) {
                   <li>
-                    <span class="period">{{ point.label }}</span>
+                    <span class="period">{{ point.label }} &middot; {{ point.utility }}</span>
                     <span class="figure">
                       {{ point.amount | number: '1.2-2' }} {{ turn.totals.currency }}
                       @if (point.usage !== null) {

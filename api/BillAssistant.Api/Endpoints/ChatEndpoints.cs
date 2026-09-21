@@ -108,7 +108,18 @@ public static class ChatEndpoints
             utility = parsed;
         }
 
-        chatRequest = new ChatRequest(request.Question.Trim(), utility, request.From, request.To, request.TopK);
+        // The client carries the conversation, so cap what it may send: history is a hint for
+        // resolving a reference, not evidence, and an unbounded one would crowd out the excerpts.
+        const int maxHistoryTurns = 8;
+
+        var history = request.History is { Count: > 0 } turns
+            ? turns.Where(t => !string.IsNullOrWhiteSpace(t.Question))
+                   .TakeLast(maxHistoryTurns)
+                   .Select(t => new ChatExchange(t.Question.Trim(), (t.Answer ?? string.Empty).Trim()))
+                   .ToList()
+            : null;
+
+        chatRequest = new ChatRequest(request.Question.Trim(), utility, request.From, request.To, request.TopK, history);
         return true;
     }
 }

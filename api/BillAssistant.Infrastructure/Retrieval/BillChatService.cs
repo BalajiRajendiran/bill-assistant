@@ -42,7 +42,7 @@ public sealed class BillChatService(
 
         var response = await chatClient.GetResponseAsync(context.Messages, ChatSettings, ct);
 
-        return new ChatAnswer(response.Text.Trim(), context.Citations, context.Totals);
+        return new ChatAnswer(AnswerText.Clean(response.Text), context.Citations, context.Totals);
     }
 
     public async IAsyncEnumerable<ChatStreamEvent> StreamAsync(
@@ -80,16 +80,42 @@ public sealed class BillChatService(
             yield break;
         }
 
+        // The same scaffolding guard as the non-streaming path, applied token by token: a tag can
+        // straddle two updates, so the filter holds back anything that might still become one.
+        var filter = new AnswerText.Filter();
+
         await foreach (var update in chatClient.GetStreamingResponseAsync(context.Messages, ChatSettings, ct))
         {
-            if (!string.IsNullOrEmpty(update.Text))
+            if (string.IsNullOrEmpty(update.Text))
             {
-                yield return ChatStreamEvent.Token(update.Text);
+                continue;
             }
+
+            var safe = filter.Push(update.Text);
+            if (safe.Length > 0)
+            {
+                yield return ChatStreamEvent.Token(safe);
+            }
+        }
+
+        var tail = filter.Flush();
+        if (tail.Length > 0)
+        {
+            yield return ChatStreamEvent.Token(tail);
         }
 
         yield return ChatStreamEvent.Done();
     }
+
+    /// <summary>How many earlier exchanges are shown when resolving a follow-up.</summary>
+    private const int MaxHistoryExchanges = 4;
+
+    /// <summary>
+    /// Longest rewrite we will trust. A model that ignores the instruction and answers the question
+    /// instead produces a paragraph, and searching on that would be worse than searching on the
+    /// pronoun - so anything this long is discarded in favour of what the user actually typed.
+    /// </summary>
+    private const int MaxRewriteChars = 300;
 
     private static ChatOptions ChatSettings => new()
     {
@@ -98,22 +124,87 @@ public sealed class BillChatService(
         MaxOutputTokens = 600
     };
 
+    /// <summary>Resolving a reference is mechanical, so it is deterministic and tightly capped.</summary>
+    private static ChatOptions RewriteSettings => new()
+    {
+        Temperature = 0f,
+        MaxOutputTokens = 120
+    };
+
+    /// <summary>
+    /// Turns a follow-up into a question that stands on its own, so that retrieval has something to
+    /// match against. Falls back to the question as typed whenever that cannot be done safely - this
+    /// step is an improvement to retrieval, never a precondition for answering.
+    /// </summary>
+    private async Task<string> ResolveQuestionAsync(ChatRequest request, CancellationToken ct)
+    {
+        if (request.History is not { Count: > 0 } history)
+        {
+            return request.Question;
+        }
+
+        // A question that already stands on its own is left exactly as it is - see LooksLikeFollowUp
+        // for why sending it to the model anyway is actively harmful.
+        if (!QuestionAnalyzer.LooksLikeFollowUp(request.Question))
+        {
+            return request.Question;
+        }
+
+        var recent = history.Count <= MaxHistoryExchanges
+            ? history
+            : [.. history.Skip(history.Count - MaxHistoryExchanges)];
+
+        try
+        {
+            var response = await chatClient.GetResponseAsync(
+                [
+                    new ChatMessage(ChatRole.System, BillPrompts.RewriteSystem),
+                    new ChatMessage(ChatRole.User, BillPrompts.RewriteUser(recent, request.Question))
+                ],
+                RewriteSettings,
+                ct);
+
+            var rewritten = response.Text.Trim().Trim('"').Trim();
+
+            if (rewritten.Length == 0 || rewritten.Length > MaxRewriteChars)
+            {
+                return request.Question;
+            }
+
+            if (!string.Equals(rewritten, request.Question, StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogInformation("Follow-up resolved to: {Resolved}", rewritten);
+            }
+
+            return rewritten;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex, "Could not resolve the follow-up; searching on it as typed.");
+            return request.Question;
+        }
+    }
+
     private async Task<RetrievalContext> BuildContextAsync(ChatRequest request, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Question);
 
         var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
-        var intent = QuestionAnalyzer.Analyse(request.Question, today);
+
+        // Everything downstream - the embedding, the utility filter, the date window - is derived
+        // from the resolved question, because that is the one that says what was meant.
+        var searchQuestion = await ResolveQuestionAsync(request, ct);
+        var intent = QuestionAnalyzer.Analyse(searchQuestion, today);
 
         // An explicit filter from the caller always wins over one inferred from the wording.
-        var utility = request.Utility ?? intent.Utility;
+        var kinds = request.Utility is { } chosen ? [chosen] : intent.Utilities;
         var from = request.From ?? intent.From;
         var to = request.To ?? intent.To;
         var top = Math.Clamp(request.TopK, 1, MaxTopK);
 
-        var queryEmbedding = await embeddingGenerator.GenerateVectorAsync(request.Question, cancellationToken: ct);
+        var queryEmbedding = await embeddingGenerator.GenerateVectorAsync(searchQuestion, cancellationToken: ct);
 
-        var chunks = await chunkStore.SearchAsync(queryEmbedding, top, new ChunkFilter(utility, from, to), ct);
+        var chunks = await chunkStore.SearchAsync(queryEmbedding, top, new ChunkFilter(Utilities: kinds, From: from, To: to), ct);
 
         // "in July" with no year is taken to mean the most recent July, but the most recent July may
         // hold no bills - a household that started tracking last year has none for this one. When the
@@ -126,7 +217,7 @@ public sealed class BillChatService(
                 var shiftedFrom = intent.From?.AddYears(-yearsBack);
                 var shiftedTo = intent.To?.AddYears(-yearsBack);
 
-                chunks = await chunkStore.SearchAsync(queryEmbedding, top, new ChunkFilter(utility, shiftedFrom, shiftedTo), ct);
+                chunks = await chunkStore.SearchAsync(queryEmbedding, top, new ChunkFilter(Utilities: kinds, From: shiftedFrom, To: shiftedTo), ct);
 
                 if (chunks.Count > 0)
                 {
@@ -141,13 +232,16 @@ public sealed class BillChatService(
         BillTotals? totals = null;
         if (intent.WantsTotals)
         {
-            totals = await repository.ComputeTotalsAsync(new BillQuery(utility, from, to), ct);
+            totals = await repository.ComputeTotalsAsync(new BillQuery(From: from, To: to, Utilities: kinds), ct);
         }
 
         logger.LogInformation(
-            "Question matched {Count} chunk(s) (utility {Utility}, {From} to {To}, totals: {Totals}).",
-            chunks.Count, utility, from, to, totals is not null);
+            "Question matched {Count} chunk(s) (utilities {Utilities}, {From} to {To}, totals: {Totals}).",
+            chunks.Count, string.Join(" + ", kinds), from, to, totals is not null);
 
+        // One page of one bill is one source, however many of its chunks matched. Without this the
+        // same file and page is listed two or three times over, which reads as corroboration from
+        // separate bills when it is the same passage retrieved twice.
         var citations = chunks
             .Select(c => new Citation(
                 Guid.TryParse(c.Chunk.BillId, out var billId) ? billId : Guid.Empty,
@@ -156,12 +250,19 @@ public sealed class BillChatService(
                 Snippet(c.Chunk.Text),
                 c.Chunk.Utility,
                 c.Score))
+            .GroupBy(c => (c.BillId, c.PageNumber))
+            .Select(g => g.MaxBy(c => c.Score ?? double.MinValue)!)
             .ToList();
 
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, BillPrompts.AnswerSystem),
-            new(ChatRole.User, BillPrompts.AnswerUser(request.Question, chunks, totals))
+            new(ChatRole.User, BillPrompts.AnswerUser(
+                request.Question,
+                chunks,
+                totals,
+                today,
+                string.Equals(searchQuestion, request.Question, StringComparison.Ordinal) ? null : searchQuestion))
         };
 
         return new RetrievalContext(chunks, citations, totals, messages);

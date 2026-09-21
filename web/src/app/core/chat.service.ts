@@ -1,9 +1,17 @@
 import { Injectable } from '@angular/core';
 import { ChatStreamEvent } from './models';
 
+/** One completed exchange, sent back so the server can resolve a follow-up against it. */
+export interface ChatTurn {
+  question: string;
+  answer: string;
+}
+
 export interface AskOptions {
   question: string;
   utility?: string | null;
+  /** Earlier exchanges, oldest first. The API is stateless, so the client carries the conversation. */
+  history?: ChatTurn[];
 }
 
 /**
@@ -18,7 +26,11 @@ export class ChatService {
     const response = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: options.question, utility: options.utility || null }),
+      body: JSON.stringify({
+        question: options.question,
+        utility: options.utility || null,
+        history: options.history ?? [],
+      }),
       signal,
     });
 

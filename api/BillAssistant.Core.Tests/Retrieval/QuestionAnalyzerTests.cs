@@ -85,4 +85,57 @@ public class QuestionAnalyzerTests
         Assert.Null(intent.From);
         Assert.Null(intent.To);
     }
+
+    [Theory]
+    [InlineData("can you add internet bill and gas bill")]
+    [InlineData("add water and electricity bill please")]
+    [InlineData("what did gas and electricity come to")]
+    public void TwoUtilitiesNamed_LeavesTheFilterOpen(string question)
+    {
+        // Filtering to either one would answer a different question than the one that was asked.
+        Assert.Null(QuestionAnalyzer.Analyse(question, Today).Utility);
+    }
+
+    [Theory]
+    [InlineData("how much")]
+    [InlineData("how much was the gas and water")]
+    [InlineData("can you add internet bill and gas bill")]
+    [InlineData("so can you add these 2 bills")]
+    [InlineData("can you sum them?")]
+    public void ArithmeticWording_GoesToTheTotalsPath(string question)
+    {
+        Assert.True(QuestionAnalyzer.Analyse(question, Today).WantsTotals);
+    }
+
+    [Theory]
+    [InlineData("what is the service address on my bill")]
+    [InlineData("what is my consumption tier")]
+    public void AggregateWordsMatchWholeWordsOnly(string question)
+    {
+        // "address" contains "add" and "consumption" contains "sum"; neither asks for a figure.
+        Assert.False(QuestionAnalyzer.Analyse(question, Today).WantsTotals);
+    }
+
+    [Theory]
+    [InlineData("can you sum them?")]
+    [InlineData("so can you add these 2 bills")]
+    [InlineData("and that one for water?")]
+    [InlineData("what about electricity?")]
+    [InlineData("when is it due")]
+    [InlineData("is that higher than the last one")]
+    public void QuestionsThatLeanOnTheConversation_AreFollowUps(string question)
+    {
+        Assert.True(QuestionAnalyzer.LooksLikeFollowUp(question));
+    }
+
+    [Theory]
+    [InlineData("How much did I pay for electricity in July 2025?")]
+    [InlineData("Is my water usage going up?")]
+    [InlineData("When is my gas bill due?")]
+    [InlineData("What did gas and electricity come to?")]
+    public void SelfContainedQuestions_AreNotFollowUps(string question)
+    {
+        // Rewriting one of these against a conversation makes it worse, not better.
+        Assert.False(QuestionAnalyzer.LooksLikeFollowUp(question));
+    }
 }

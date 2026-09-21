@@ -76,4 +76,30 @@ public class TrendSummaryTests
         Assert.Null(TrendSummary.Describe(series, "USD"));
         Assert.Null(TrendSummary.Describe(null, "USD"));
     }
+
+    [Fact]
+    public void ASeriesSpanningTwoUtilitiesHasNoDirection()
+    {
+        // "Add the water and electricity bills" matches both kinds; first-to-last across them would
+        // compare an electricity bill with a water bill and report a confident, meaningless percentage.
+        string? described = TrendSummary.Describe(
+        [
+            new PeriodTotal(new(2025, 5, 1), new(2025, 5, 31), 113.51m, 402, "kWh", UtilityKind.Electricity),
+            new PeriodTotal(new(2025, 7, 1), new(2025, 9, 30), 206.24m, 19, "CCF", UtilityKind.Water),
+        ], "USD");
+
+        Assert.Null(described);
+    }
+
+    [Fact]
+    public void ASeriesOfOneUtilityStillDescribesItsDirection()
+    {
+        var described = TrendSummary.Describe(
+        [
+            new PeriodTotal(new(2025, 4, 1), new(2025, 6, 30), 159.53m, 14, "CCF", UtilityKind.Water),
+            new PeriodTotal(new(2025, 7, 1), new(2025, 9, 30), 206.24m, 19, "CCF", UtilityKind.Water),
+        ], "USD");
+
+        Assert.Contains("usage rose 36% from 14 to 19 CCF", described);
+    }
 }

@@ -1,12 +1,21 @@
 namespace BillAssistant.Core.Models;
 
+/// <summary>One completed exchange, used to make a follow-up question stand on its own.</summary>
+public sealed record ChatExchange(string Question, string Answer);
+
 /// <summary>A question, optionally scoped to a subset of bills.</summary>
+/// <param name="History">
+/// Earlier exchanges in this conversation, oldest first. Supplied so a follow-up like "can you sum
+/// them?" can be resolved into a standalone question before it is embedded - a pronoun retrieves
+/// nothing useful, because there is no passage in any bill that looks like "them".
+/// </param>
 public sealed record ChatRequest(
     string Question,
     UtilityKind? Utility = null,
     DateOnly? From = null,
     DateOnly? To = null,
-    int TopK = 6);
+    int TopK = 6,
+    IReadOnlyList<ChatExchange>? History = null);
 
 /// <summary>A grounded answer plus the passages it came from.</summary>
 public sealed record ChatAnswer(
@@ -15,12 +24,17 @@ public sealed record ChatAnswer(
     BillTotals? Totals = null);
 
 /// <summary>One bill's figures, as a point in a series.</summary>
+/// <param name="Utility">
+/// Which bill this point came from. Carried so a series spanning several utilities can be recognised
+/// as one: comparing the oldest electricity bill to the newest water bill is not a trend.
+/// </param>
 public sealed record PeriodTotal(
     DateOnly? PeriodStart,
     DateOnly? PeriodEnd,
     decimal Amount,
     double? Usage,
-    string? UsageUnit)
+    string? UsageUnit,
+    UtilityKind Utility = UtilityKind.Unknown)
 {
     public string Label => (PeriodStart, PeriodEnd) switch
     {

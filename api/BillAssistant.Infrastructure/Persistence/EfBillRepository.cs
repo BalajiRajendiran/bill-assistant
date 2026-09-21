@@ -107,13 +107,14 @@ public sealed class EfBillRepository(BillDbContext db) : IBillRepository
                 b.PeriodEnd,
                 Minor = b.AmountDueMinor!.Value,
                 b.UsageQuantity,
-                b.UsageUnit
+                b.UsageUnit,
+                b.Utility
             })
             .ToListAsync(ct);
 
         var series = rows
             .OrderBy(r => r.PeriodEnd ?? DateOnly.MinValue)
-            .Select(r => new PeriodTotal(r.PeriodStart, r.PeriodEnd, r.Minor / 100m, r.UsageQuantity, r.UsageUnit))
+            .Select(r => new PeriodTotal(r.PeriodStart, r.PeriodEnd, r.Minor / 100m, r.UsageQuantity, r.UsageUnit, r.Utility))
             .ToList();
 
         return new BillTotals(
@@ -133,9 +134,11 @@ public sealed class EfBillRepository(BillDbContext db) : IBillRepository
     /// </summary>
     private static IQueryable<Bill> Filter(IQueryable<Bill> source, BillQuery query)
     {
-        if (query.Utility is { } utility)
+        // A set rather than one kind, so "add the gas and internet bills" totals those two and not
+        // every bill on file. EF turns this into an IN (...) clause.
+        if (query.Kinds is { Count: > 0 } kinds)
         {
-            source = source.Where(b => b.Utility == utility);
+            source = source.Where(b => kinds.Contains(b.Utility));
         }
 
         if (query.From is { } from)

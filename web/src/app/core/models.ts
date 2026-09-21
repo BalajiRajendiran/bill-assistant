@@ -48,6 +48,8 @@ export interface PeriodTotal {
   amount: number;
   usage: number | null;
   usageUnit: string | null;
+  /** Which bill this point came from; a series can span several utilities. */
+  utility: UtilityKind;
 }
 
 export interface Totals {

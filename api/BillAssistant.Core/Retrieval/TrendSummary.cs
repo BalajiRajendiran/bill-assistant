@@ -28,6 +28,15 @@ public static class TrendSummary
             return null;
         }
 
+        // A series covering more than one utility has no direction. "Add the water and electricity
+        // bills" matches five bills of two kinds, and first-to-last across them compares an
+        // electricity bill in May with a water bill in September - a real percentage computed from
+        // two unrelated things, which is worse than no answer because it looks authoritative.
+        if (series.Select(p => p.Utility).Distinct().Count() > 1)
+        {
+            return null;
+        }
+
         var first = series[0];
         var last = series[^1];
         var parts = new List<string>();
